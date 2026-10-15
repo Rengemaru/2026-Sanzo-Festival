@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ふしぎな ひかりの たま(ざこ敵だけ)</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    font-family: "Hiragino Maru Gothic ProN", "Hiragino Sans", "Yu Gothic", sans-serif;
+    color: #3a2f5b;
+    user-select: none;
+  }
+  #game { display: block; width: 100vw; height: 100vh; }
+  #count {
+    position: fixed; top: 16px; left: 20px;
+    font-size: 28px; font-weight: bold;
+    text-shadow: 0 2px 0 rgba(255,255,255,0.8);
+  }
+  #hint {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    font-size: 30px; font-weight: bold;
+    padding: 10px 28px; border-radius: 999px;
+    background: rgba(255,255,255,0.85);
+    transition: opacity 0.8s;
+  }
+  #hint.hide { opacity: 0; }
+  #banner {
+    position: fixed; left: 50%; top: 42%; transform: translate(-50%, -50%);
+    font-size: 56px; font-weight: bold; white-space: nowrap;
+    color: #fff; text-shadow: 0 4px 0 #6b4fd8, 0 0 24px rgba(107,79,216,0.6);
+    opacity: 0; transition: opacity 0.4s; pointer-events: none;
+  }
+  #banner.show { opacity: 1; }
+  #gauge {
+    position: fixed; left: 50%; top: 16px; transform: translateX(-50%);
+    width: min(60vw, 520px); text-align: center;
+    display: none;
+  }
+  #gauge.show { display: block; }
+  #gaugeLabel { font-size: 22px; font-weight: bold; text-shadow: 0 2px 0 rgba(255,255,255,0.8); }
+  #gaugeTrack {
+    margin-top: 6px; height: 22px; border-radius: 999px;
+    background: rgba(255,255,255,0.75); border: 3px solid #fff; overflow: hidden;
+  }
+  #gaugeBar {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, #ffd93b, #ff9de2, #8fd3ff);
+    transition: width 0.15s;
+  }
+  #patternName { margin-top: 6px; font-size: 18px; font-weight: bold; text-shadow: 0 2px 0 rgba(255,255,255,0.8); }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="count"></div>
+<div id="hint">やじるしキーで うごかしてね</div>
+<div id="banner"></div>
+<div id="gauge">
+  <div id="gaugeLabel">ぐるぐるゲージ</div>
+  <div id="gaugeTrack"><div id="gaugeBar"></div></div>
+  <div id="patternName"></div>
+</div>
+
+<script>
+// =====================================================================
+// CONFIG:ゲームの見た目と動きの設定。こどもの「〇〇にして!」は、まずここを変える。
+// =====================================================================
+const CONFIG = {
+  // ----- じぶん・光の玉・見た目 -----
+  player: "🐱",            // じぶんのキャラ(絵文字)
+  shot: "glow",            // 弾。"glow" = ふしぎな光の玉。絵文字を入れるとその絵文字が弾になる
+  shotColor: "#ffd93b",    // 光の玉の色("glow" のときだけ使う)。"rainbow" で虹色
+  shotInterval: 400,       // 弾が出る間隔(ミリ秒。小さいほどたくさん出る)
+  playerSpeed: 6,          // じぶんのキャラの速さ
+  playerSize: 72,          // じぶんのキャラの大きさ
+  dizzyMark: "⭐",         // 目を回したとき頭の上で回るもの(絵文字)
+  enemyShot: "bubble",     // シャボン玉の見た目。"bubble" = シャボン玉。絵文字を入れるとその絵文字になる
+  background: "linear-gradient(#bfe8ff, #fff6dc)", // 背景(CSSの色。グラデーションも可)
+  sounds: true,            // 効果音のオン/オフ
+
+  // ----- ざこ敵 -----
+  enemy: "👾",             // 降りてくるキャラ(絵文字)
+  enemySpeed: 1,           // 降りてくる速さ(上限は 2)
+  enemySize: 60,           // 降りてくるキャラの大きさ
+  maxEnemies: 10,          // 画面にいるキャラの最大数(上限は 20)
+  enemyShots: true,        // シャボン玉を出すか
+  enemyShotPattern: "ぐるぐる", // 出し方:"ぐるぐる" / "はなび" / "まっすぐ"
+  enemyShotInterval: 700,  // シャボン玉を出す間隔(ミリ秒。下限は 300)
+  enemyShotSpeed: 1.5,     // シャボン玉の速さ(上限は 3)
+  enemyShotSize: 28,       // シャボン玉の大きさ
+};
+
+// =====================================================================
+// ここから下はゲーム本体
+// =====================================================================
+// ゲームの種類(このフォルダでは変えない)
+//   "zako" = ざこ敵だけ / "boss" = ボスだけ / "both" = ざこ敵とボス
+const MODE = "zako";
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const countEl = document.getElementById("count");
+const hintEl = document.getElementById("hint");
+const bannerEl = document.getElementById("banner");
+const gaugeEl = document.getElementById("gauge");
+const gaugeLabelEl = document.getElementById("gaugeLabel");
+const gaugeBarEl = document.getElementById("gaugeBar");
+const patternNameEl = document.getElementById("patternName");
+const EMOJI_FONT = '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+
+let W = 0, H = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", resize);
+resize();
+document.body.style.background = CONFIG.background;
+
+function drawEmoji(ch, x, y, size) {
+  ctx.font = `${size}px ${EMOJI_FONT}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(ch, x, y);
+}
+
+// ---------- 効果音(ブラウザ内で合成。外部ファイルなし) ----------
+let audio = null;
+function startAudio() {
+  if (!CONFIG.sounds) return;
+  if (!audio) {
+    try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; }
+  }
+  if (audio && audio.state === "suspended") audio.resume();
+}
+function tone(from, to, dur, type, vol) {
+  if (!CONFIG.sounds || !audio) return;
+  const t = audio.currentTime;
+  const osc = audio.createOscillator();
+  const gain = audio.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(from, t);
+  osc.frequency.exponentialRampToValueAtTime(to, t + dur);
+  gain.gain.setValueAtTime(vol, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  osc.connect(gain).connect(audio.destination);
+  osc.start(t);
+  osc.stop(t + dur);
+}
+const SOUND = {
+  shot:      () => tone(900, 1300, 0.06, "sine", 0.03),
+  dizzy:     () => tone(700, 250, 0.35, "triangle", 0.15),
+  boing:     () => tone(220, 520, 0.2, "sine", 0.15),
+  pop:       () => tone(1400, 500, 0.08, "sine", 0.12),
+  bye:       () => { tone(660, 660, 0.1, "sine", 0.08); setTimeout(() => tone(880, 880, 0.14, "sine", 0.08), 120); },
+  bossIn:    () => { tone(330, 330, 0.25, "triangle", 0.15); setTimeout(() => tone(440, 440, 0.25, "triangle", 0.15), 280); setTimeout(() => tone(660, 660, 0.4, "triangle", 0.15), 560); },
+  bossHit:   () => tone(500, 750, 0.05, "sine", 0.05),
+  bossDizzy: () => tone(900, 150, 0.9, "triangle", 0.18),
+};
+
+// ---------- 操作(こどもは やじるしキーだけ。B キーはスタッフ用:すぐにボスを呼ぶ) ----------
+const keys = { left: false, right: false, up: false, down: false };
+window.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowLeft")  { keys.left = true;  e.preventDefault(); }
+  if (e.key === "ArrowRight") { keys.right = true; e.preventDefault(); }
+  if (e.key === "ArrowUp")    { keys.up = true;    e.preventDefault(); }
+  if (e.key === "ArrowDown")  { keys.down = true;  e.preventDefault(); }
+  if ((e.key === "b" || e.key === "B") && stage === "normal" && MODE === "both") startBoss();
+  startAudio();
+  hintEl.classList.add("hide");
+});
+window.addEventListener("keyup", (e) => {
+  if (e.key === "ArrowLeft")  keys.left = false;
+  if (e.key === "ArrowRight") keys.right = false;
+  if (e.key === "ArrowUp")    keys.up = false;
+  if (e.key === "ArrowDown")  keys.down = false;
+});
+window.addEventListener("blur", () => { keys.left = keys.right = keys.up = keys.down = false; });
+
+// ---------- ゲームの状態 ----------
+const player = { x: W / 2, y: H - CONFIG.playerSize * 0.8, bounce: 0, dizzy: 0, safe: 0 };
+// bounce: ぶつかったときの「ぽよん」の残り時間
+// dizzy : シャボン玉に当たって目を回している残り時間(この間は動けない)
+// safe  : 目を回したあと、シャボン玉に当たらない残り時間
+let shots = [];
+let enemies = [];
+let bubbles = [];  // シャボン玉
+let pops = [];     // シャボン玉がはじけた跡
+let fireTimer = 0;
+let spawnTimer = 0;
+let dizzyCount = 0;
+let now = 0;
+let stage = "normal";            // "normal"(ふつう)/ "boss"(ボス)
+let nextBossAt = CONFIG.bossAt;  // 「ぐるぐる」がこの数になったらボス(ざことボス のとき)
+let bossWait = 1500;             // つぎのボスが来るまでの時間(ボスだけ のとき)
+let boss = null;
+let bannerTimer = 0;
+
+// 目を回してから帰るまでの流れ(ミリ秒)
+const DIZZY_END = 800;    // 0〜800:ふらふら
+const FALL_END = 1100;    // 〜1100:ころんと倒れる
+const LIE_END = 1900;     // 〜1900:倒れたまま
+const GETUP_END = 2200;   // 〜2200:起き上がる。そのあと手を振って帰る
+
+// ボスの流れ(ミリ秒)
+const BOSS_ENTER = 2000;    // 上からおりてくる時間
+const B_DIZZY_END = 1500;
+const B_FALL_END = 1900;
+const B_LIE_END = 3400;
+const B_GETUP_END = 3800;
+
+// じぶんのキャラが目を回す時間は、ここで固定(長くしない)
+const PLAYER_DIZZY = 600; // 目を回して動けない時間
+const PLAYER_SAFE = 1500; // そのあと当たらない時間
+const MAX_BUBBLES = 150;  // 画面にあるシャボン玉の上限
+const PLAYER_TOP_RATIO = 0.35; // じぶんのキャラが動ける上のはし(画面の上から何割か。0.35 = 上から35%)
+                               // これより小さくすると、ボス(上から20%あたり)に重なりはじめる
+
+function updateCount() {
+  countEl.textContent = `ぐるぐる ${dizzyCount}`;
+}
+updateCount();
+
+function showBanner(text, ms) {
+  bannerEl.textContent = text;
+  bannerEl.classList.add("show");
+  bannerTimer = ms;
+}
+
+function spawnEnemy() {
+  const size = CONFIG.enemySize;
+  enemies.push({
+    x: size + Math.random() * Math.max(1, W - size * 2),
+    y: -size,
+    state: "walk",
+    t: 0,
+    rot: 0,
+    fallDir: Math.random() < 0.5 ? -1 : 1,
+    exitDir: 1,
+    phase: Math.random() * Math.PI * 2,
+    bumpCooldown: 0,
+    saidBye: false,
+    shotTimer: Math.random() * CONFIG.enemyShotInterval,
+    spin: Math.random() * Math.PI * 2,
+  });
+}
+
+// シャボン玉を出す(敵もボスもこれを使う)
+//   src: 出す人(spin を持っている) / spreadW: "まっすぐ" のときに広がる幅
+function fireBubbles(src, x, y, pattern, speed, size, spreadW) {
+  const v = Math.min(speed, 3);
+  const r = Math.max(10, Math.min(size, 80)) / 2;
+  const add = (angle, ox) => {
+    if (bubbles.length >= MAX_BUBBLES) return;
+    bubbles.push({
+      x: x + (ox || 0), y, r,
+      vx: Math.cos(angle) * v, vy: Math.sin(angle) * v,
+      hue: Math.random() * 360, wob: Math.random() * Math.PI * 2,
+    });
+  };
+  if (pattern === "はなび") {
+    for (let i = 0; i < 8; i++) add(src.spin + (i * Math.PI) / 4);
+    src.spin += 0.3;
+  } else if (pattern === "まっすぐ") {
+    add(Math.PI / 2, (Math.random() - 0.5) * spreadW);
+  } else { // ぐるぐる(わからない値のときもこれ)
+    add(src.spin);
+    add(src.spin + Math.PI);
+    src.spin += 0.45;
+  }
+}
+
+function popAllBubbles() {
+  for (const b of bubbles) pops.push({ x: b.x, y: b.y, r: b.r, t: 0, hue: b.hue });
+  bubbles = [];
+  SOUND.pop();
+}
+
+function fire() {
+  shots.push({
+    x: player.x,
+    y: player.y - CONFIG.playerSize * 0.4,
+    hue: (now * 0.2) % 360,
+  });
+  SOUND.shot();
+}
+
+function shotRadius() {
+  return CONFIG.shot === "glow" ? 14 : CONFIG.playerSize * 0.2;
+}
+
+// ---------- ボス ----------
+function startBoss() {
+  stage = "boss";
+  boss = {
+    x: W / 2, y: -CONFIG.bossSize,
+    state: "enter", t: 0,
+    hits: 0, phase: 0, phaseT: 0, shotTimer: 0, spin: 0,
+    rot: 0, flinch: 0, fallDir: 1, exitDir: 1, saidBye: false,
+  };
+  showBanner("ボスが きたよ!", 2000);
+  gaugeEl.classList.add("show");
+  SOUND.bossIn();
+}
+
+function bossNeed() {
+  return Math.max(5, Math.min(CONFIG.bossHits, 60));
+}
+
+function updateBoss(dt, f) {
+  const b = boss;
+  const size = CONFIG.bossSize;
+  const homeY = H * 0.2;
+  b.t += dt;
+  b.flinch = Math.max(0, b.flinch - dt);
+
+  if (b.state === "enter") {
+    b.y = -size + (homeY + size) * Math.min(1, b.t / BOSS_ENTER);
+    if (b.t >= BOSS_ENTER) { b.state = "fight"; b.t = 0; }
+  } else if (b.state === "fight") {
+    b.x = W / 2 + Math.sin(b.t * 0.0007) * W * 0.3;
+    b.y = homeY + Math.sin(b.t * 0.0013) * 15;
+
+    // シャボン玉の出し方を、順番に切りかえる
+    const list = CONFIG.bossPatterns || [];
+    if (list.length > 0) {
+      const ph = list[b.phase % list.length];
+      b.phaseT += dt;
+      if (b.phaseT >= (ph.time || 6000)) {
+        b.phaseT = 0;
+        b.phase = (b.phase + 1) % list.length;
+        b.shotTimer = 0;
+      }
+      const cur = list[b.phase % list.length];
+      b.shotTimer += dt;
+      if (b.shotTimer >= Math.max(100, cur.interval || 500)) {
+        b.shotTimer = 0;
+        fireBubbles(b, b.x, b.y, cur.pattern, cur.speed || 1.5, cur.size || 28, size);
+      }
+      patternNameEl.textContent = cur.name || "";
+    }
+
+    // 光の玉が当たるとゲージがたまる。いっぱいになると目を回す
+    for (const s of shots) {
+      if (Math.hypot(s.x - b.x, s.y - b.y) < size * 0.45 + shotRadius()) {
+        s.y = -999;
+        b.hits++;
+        b.flinch = 150;
+        SOUND.bossHit();
+        if (b.hits >= bossNeed()) {
+          b.state = "dizzy";
+          b.t = 0;
+          b.exitDir = b.x < W / 2 ? -1 : 1;
+          b.fallDir = -b.exitDir;
+          popAllBubbles();
+          dizzyCount++;
+          updateCount();
+          showBanner("ボスが めを まわしたよ!", 2500);
+          SOUND.bossDizzy();
+          break;
+        }
+      }
+    }
+  } else {
+    // 目を回してから帰るまで
+    if (b.t < B_DIZZY_END) {
+      b.rot = Math.sin(b.t * 0.02) * 0.3;
+    } else if (b.t < B_FALL_END) {
+      b.rot = b.fallDir * (Math.PI / 2) * ((b.t - B_DIZZY_END) / (B_FALL_END - B_DIZZY_END));
+    } else if (b.t < B_LIE_END) {
+      b.rot = b.fallDir * (Math.PI / 2);
+    } else if (b.t < B_GETUP_END) {
+      b.rot = b.fallDir * (Math.PI / 2) * (1 - (b.t - B_LIE_END) / (B_GETUP_END - B_LIE_END));
+    } else {
+      b.rot = 0;
+      if (!b.saidBye) { b.saidBye = true; SOUND.bye(); }
+      b.x += b.exitDir * 2.5 * f;
+      if (b.x < -size || b.x > W + size) {
+        // ボスが帰ったら、ふつうのステージにもどる
+        boss = null;
+        stage = "normal";
+        nextBossAt = dizzyCount + Math.max(1, CONFIG.bossAt);
+        bossWait = 3000;
+        gaugeEl.classList.remove("show");
+      }
+    }
+  }
+
+  if (boss) {
+    gaugeBarEl.style.width = `${Math.min(100, (boss.hits / bossNeed()) * 100)}%`;
+    if (boss.state !== "enter" && boss.state !== "fight") patternNameEl.textContent = "";
+  }
+}
+
+// ---------- 毎フレームの更新 ----------
+function update(dt) {
+  const f = dt / 16.67;
+  const pSize = CONFIG.playerSize;
+  const eSize = CONFIG.enemySize;
+  // じぶんのキャラが動ける上のはし(敵やボスに近づきすぎないように)
+  const PLAYER_TOP = H * PLAYER_TOP_RATIO;
+  const PLAYER_BOTTOM = H - pSize * 0.8;
+
+  // じぶんのキャラ
+  if (player.dizzy > 0) {
+    player.dizzy -= dt;
+    if (player.dizzy <= 0) { player.dizzy = 0; player.safe = PLAYER_SAFE; }
+  } else {
+    let dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+    let dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+    if (dx !== 0 && dy !== 0) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; } // ななめでも速くならない
+    player.x += dx * CONFIG.playerSpeed * f;
+    player.y += dy * CONFIG.playerSpeed * f;
+    player.safe = Math.max(0, player.safe - dt);
+  }
+  player.x = Math.max(pSize / 2, Math.min(W - pSize / 2, player.x));
+  player.y = Math.max(PLAYER_TOP, Math.min(PLAYER_BOTTOM, player.y));
+  const playerY = player.y;
+  player.bounce = Math.max(0, player.bounce - dt);
+
+  // 弾は自動で出る
+  fireTimer += dt;
+  if (fireTimer >= CONFIG.shotInterval) {
+    fireTimer = 0;
+    fire();
+  }
+  for (const s of shots) s.y -= 9 * f;
+  shots = shots.filter((s) => s.y > -40);
+
+  // ボスの登場
+  if (MODE === "both" && stage === "normal" && dizzyCount >= nextBossAt) startBoss();
+  if (MODE === "boss" && stage === "normal") {
+    bossWait -= dt;
+    if (bossWait <= 0) startBoss();
+  }
+  if (boss) updateBoss(dt, f);
+
+  // キャラが降りてくる(ボスのときは出てこない)
+  spawnTimer += dt;
+  if (MODE !== "boss" && stage === "normal" && spawnTimer > 1200 &&
+      enemies.length < Math.min(CONFIG.maxEnemies, 20)) {
+    spawnTimer = 0;
+    spawnEnemy();
+  }
+
+  for (const e of enemies) {
+    e.bumpCooldown = Math.max(0, e.bumpCooldown - dt);
+
+    if (e.state === "walk") {
+      const speed = Math.min(CONFIG.enemySpeed, 2);
+      e.y += speed * f;
+      e.x += Math.sin(now * 0.002 + e.phase) * 0.6 * f;
+
+      // シャボン玉を出す(ボスのときと、じぶんのキャラのすぐ上まで来たときは出さない)
+      if (stage === "normal" && CONFIG.enemyShots && e.y > 0 && e.y < player.y - 220) {
+        e.shotTimer += dt;
+        const interval = Math.max(300, CONFIG.enemyShotInterval);
+        const wait = CONFIG.enemyShotPattern === "はなび" ? interval * 3 : interval;
+        if (e.shotTimer >= wait) {
+          e.shotTimer = 0;
+          fireBubbles(e, e.x, e.y, CONFIG.enemyShotPattern, CONFIG.enemyShotSpeed, CONFIG.enemyShotSize, 0);
+        }
+      }
+
+      // 光の玉が当たったら、目を回す
+      for (const s of shots) {
+        if (Math.hypot(s.x - e.x, s.y - e.y) < eSize * 0.45 + shotRadius()) {
+          s.y = -999;
+          e.state = "dizzy";
+          e.t = 0;
+          e.exitDir = e.x < W / 2 ? -1 : 1;
+          dizzyCount++;
+          updateCount();
+          SOUND.dizzy();
+          break;
+        }
+      }
+
+      // じぶんのキャラにぶつかったら、ぽよんと跳ねるだけ
+      if (e.state === "walk" && e.bumpCooldown === 0 &&
+          Math.hypot(e.x - player.x, e.y - playerY) < (pSize + eSize) * 0.4) {
+        player.bounce = 400;
+        e.y -= 30;
+        e.bumpCooldown = 1000;
+        SOUND.boing();
+      }
+    } else {
+      // 目を回してから帰るまで
+      e.t += dt;
+      if (e.t < DIZZY_END) {
+        e.rot = Math.sin(e.t * 0.03) * 0.35;
+      } else if (e.t < FALL_END) {
+        const p = (e.t - DIZZY_END) / (FALL_END - DIZZY_END);
+        e.rot = e.fallDir * (Math.PI / 2) * p;
+      } else if (e.t < LIE_END) {
+        e.rot = e.fallDir * (Math.PI / 2);
+      } else if (e.t < GETUP_END) {
+        const p = (e.t - LIE_END) / (GETUP_END - LIE_END);
+        e.rot = e.fallDir * (Math.PI / 2) * (1 - p);
+      } else {
+        e.rot = 0;
+        if (!e.saidBye) { e.saidBye = true; SOUND.bye(); }
+        e.x += e.exitDir * 2.2 * f;
+      }
+    }
+  }
+
+  // シャボン玉
+  for (const b of bubbles) {
+    b.wob += 0.05 * f;
+    b.x += (b.vx + Math.sin(b.wob) * 0.3) * f;
+    b.y += b.vy * f;
+    // 当たり判定は小さめ(こどもに やさしく)
+    if (player.dizzy === 0 && player.safe === 0 &&
+        Math.hypot(b.x - player.x, b.y - playerY) < pSize * 0.25 + b.r * 0.6) {
+      b.y = -9999;
+      pops.push({ x: player.x, y: playerY, r: b.r, t: 0, hue: b.hue });
+      player.dizzy = PLAYER_DIZZY;
+      SOUND.pop();
+    }
+  }
+  bubbles = bubbles.filter((b) => b.x > -100 && b.x < W + 100 && b.y > -100 && b.y < H + 100);
+  for (const p of pops) p.t += dt;
+  pops = pops.filter((p) => p.t < 300);
+
+  // 画面の外へ出たキャラだけ片づける(自分で歩いて出ていった後)
+  enemies = enemies.filter((e) => e.y < H + eSize * 2 && e.x > -eSize * 2 && e.x < W + eSize * 2);
+
+  // 文字のお知らせ
+  if (bannerTimer > 0) {
+    bannerTimer -= dt;
+    if (bannerTimer <= 0) bannerEl.classList.remove("show");
+  }
+}
+
+// ---------- 描画 ----------
+function drawGlowShot(s) {
+  const color = CONFIG.shotColor === "rainbow"
+    ? `hsl(${(s.hue + now * 0.3) % 360}, 100%, 62%)`
+    : CONFIG.shotColor;
+  const r = 14 + Math.sin(now * 0.02 + s.hue) * 2;
+  ctx.save();
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 24;
+  const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r);
+  g.addColorStop(0, "#ffffff");
+  g.addColorStop(0.4, color);
+  g.addColorStop(1, "rgba(255, 255, 255, 0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// 頭の上でマークが回る(rot = キャラの傾き。倒れていると頭の向きについていく)
+function drawDizzyMarks(cx, cy, size, rot, t, count) {
+  const hx = cx + Math.sin(rot) * size * 0.65;
+  const hy = cy - Math.cos(rot) * size * 0.65;
+  for (let i = 0; i < count; i++) {
+    const a = t * 0.008 + (i * Math.PI * 2) / count;
+    drawEmoji(CONFIG.dizzyMark, hx + Math.cos(a) * size * 0.45, hy + Math.sin(a) * size * 0.15, size * 0.3);
+  }
+}
+
+function drawWave(x, y, size, t) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(Math.sin(t * 0.015) * 0.5);
+  drawEmoji("👋", 0, 0, size);
+  ctx.restore();
+}
+
+function drawEnemy(e) {
+  const size = CONFIG.enemySize;
+  let y = e.y;
+  if (e.state !== "walk" && e.t >= DIZZY_END && e.t < GETUP_END) y += size * 0.2; // 倒れると少し低くなる
+  if (e.state !== "walk" && e.t >= GETUP_END) y -= Math.abs(Math.sin(e.t * 0.012)) * 8; // ぴょこぴょこ歩く
+
+  ctx.save();
+  ctx.translate(e.x, y);
+  ctx.rotate(e.rot);
+  drawEmoji(CONFIG.enemy, 0, 0, size);
+  ctx.restore();
+
+  if (e.state !== "walk" && e.t < LIE_END) drawDizzyMarks(e.x, y, size, e.rot, e.t, 3);
+  if (e.state !== "walk" && e.t >= GETUP_END) drawWave(e.x - e.exitDir * size * 0.6, y - size * 0.3, size * 0.5, e.t);
+}
+
+function drawBoss() {
+  const b = boss;
+  const size = CONFIG.bossSize;
+  const dizzy = b.state === "dizzy";
+  let y = b.y;
+  if (dizzy && b.t >= B_DIZZY_END && b.t < B_GETUP_END) y += size * 0.15;
+  if (dizzy && b.t >= B_GETUP_END) y -= Math.abs(Math.sin(b.t * 0.01)) * 10;
+
+  const s = b.flinch > 0 ? 0.92 : 1; // 当たると少しちぢむ
+  ctx.save();
+  ctx.translate(b.x, y);
+  ctx.rotate(b.rot);
+  ctx.scale(s, s);
+  drawEmoji(CONFIG.boss, 0, 0, size);
+  ctx.restore();
+
+  if (dizzy && b.t < B_LIE_END) drawDizzyMarks(b.x, y, size, b.rot, b.t, 4);
+  if (dizzy && b.t >= B_GETUP_END) drawWave(b.x - b.exitDir * size * 0.6, y - size * 0.3, size * 0.4, b.t);
+}
+
+function drawBubble(b) {
+  const r = b.r;
+  if (CONFIG.enemyShot !== "bubble") { drawEmoji(CONFIG.enemyShot, b.x, b.y, r * 2); return; }
+  ctx.save();
+  const g = ctx.createRadialGradient(b.x - r * 0.3, b.y - r * 0.3, r * 0.1, b.x, b.y, r);
+  g.addColorStop(0, "rgba(255, 255, 255, 0.3)");
+  g.addColorStop(0.75, `hsla(${b.hue}, 90%, 85%, 0.25)`);
+  g.addColorStop(1, `hsla(${b.hue}, 90%, 70%, 0.6)`);
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = `hsla(${(b.hue + now * 0.1) % 360}, 80%, 60%, 0.8)`;
+  ctx.stroke();
+  ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+  ctx.beginPath();
+  ctx.ellipse(b.x - r * 0.35, b.y - r * 0.4, r * 0.25, r * 0.14, -0.6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawPop(p) {
+  const k = p.t / 300;
+  ctx.save();
+  ctx.globalAlpha = 1 - k;
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = `hsl(${p.hue}, 80%, 65%)`;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, p.r * (1 + k), 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawPlayer() {
+  const size = CONFIG.playerSize;
+  const p = player.bounce / 400; // 1 → 0
+  const jump = Math.sin(p * Math.PI) * 24;
+  const squash = 1 + Math.sin(p * Math.PI * 2) * 0.15;
+  const py = player.y - jump;
+  ctx.save();
+  if (player.safe > 0) ctx.globalAlpha = 0.55 + Math.sin(now * 0.02) * 0.25; // 当たらない間は少し透ける
+  ctx.translate(player.x, py);
+  if (player.dizzy > 0) ctx.rotate(Math.sin(now * 0.03) * 0.3); // ふらふら
+  ctx.scale(squash, 2 - squash);
+  drawEmoji(CONFIG.player, 0, 0, size);
+  ctx.restore();
+
+  if (player.dizzy > 0) drawDizzyMarks(player.x, py, size, 0, now, 3);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  for (const s of shots) {
+    if (CONFIG.shot === "glow") drawGlowShot(s);
+    else drawEmoji(CONFIG.shot, s.x, s.y, CONFIG.playerSize * 0.4);
+  }
+  for (const e of enemies) drawEnemy(e);
+  if (boss) drawBoss();
+  for (const b of bubbles) drawBubble(b);
+  for (const p of pops) drawPop(p);
+  drawPlayer();
+}
+
+// ---------- ループ ----------
+let last = performance.now();
+function loop(t) {
+  const dt = Math.min(50, t - last);
+  last = t;
+  now = t;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
